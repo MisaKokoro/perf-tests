@@ -1,0 +1,146 @@
+/*
+ *     Copyright 2026 The Dragonfly Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package contract
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"reflect"
+	"strings"
+)
+
+func Digest(data []byte) string {
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
+}
+
+func ValidDigest(value string) bool {
+	_, err := hex.DecodeString(value)
+	return err == nil && len(value) == 64 && value == strings.ToLower(value)
+}
+
+// Encode uses struct field order, compact UTF-8 JSON and exactly one final LF.
+func Encode(value any) ([]byte, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+// Decode rejects ambiguity before typed decoding: duplicate keys, nulls, missing
+// fields (including zero-valued required fields), unknown fields and extra values.
+func Decode(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := checkValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("expected end of JSON, got %v", err)
+	}
+	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	return requiredFields(data, reflect.TypeOf(value).Elem(), "$")
+}
+
+func checkValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token == nil {
+		return fmt.Errorf("null is not allowed")
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := map[string]bool{}
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok || seen[name] {
+				return fmt.Errorf("duplicate or invalid JSON key %q", key)
+			}
+			seen[name] = true
+			if err := checkValue(decoder); err != nil {
+				return err
+			}
+		}
+	case '[':
+		for decoder.More() {
+			if err := checkValue(decoder); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+	_, err = decoder.Token()
+	return err
+}
+
+func requiredFields(data []byte, typ reflect.Type, location string) error {
+	switch typ.Kind() {
+	case reflect.Struct:
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name == "-" || !field.IsExported() {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			raw, ok := fields[name]
+			if !ok {
+				return fmt.Errorf("%s.%s: required field missing", location, name)
+			}
+			if err := requiredFields(raw, field.Type, location+"."+name); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var entries []json.RawMessage
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return err
+		}
+		for i, entry := range entries {
+			if err := requiredFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}

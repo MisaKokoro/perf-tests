@@ -147,6 +147,17 @@ docker-push-image-bench-v1-20gb-4:
 	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(D7Y_REGISTRY)/image-bench:v1-20gb-4 -f ./build/images/image-bench/v1-20gb-4/Dockerfile .
 .PHONY: docker-push-image-bench-v1-20gb-4
 
+# Build fixed-pool preparation commands.
+build-proxy-bench-data-prepare:
+	@mkdir -p bin
+	go build -mod=readonly -o bin/proxy-bench-data-prepare ./tools/proxy-bench/fixed-pool/cmd/data-prepare
+.PHONY: build-proxy-bench-data-prepare
+
+build-proxy-bench-plan-prepare:
+	@mkdir -p bin
+	go build -mod=readonly -o bin/proxy-bench-plan-prepare ./tools/proxy-bench/fixed-pool/cmd/plan-prepare
+.PHONY: build-proxy-bench-plan-prepare
+
 # Run code lint
 lint: markdownlint
 	@echo "Begin to golangci-lint."
@@ -166,6 +177,8 @@ clean:
 .PHONY: clean
 
 help: 
+	@echo "make build-proxy-bench-data-prepare         build the fixed-pool dataset command"
+	@echo "make build-proxy-bench-plan-prepare         build the fixed-pool access-plan command"
 	@echo "make docker-build-file-server               build file-server image"
 	@echo "make docker-push-file-server                push file-server image"
 	@echo "make docker-build-proxy-bench               build proxy-bench image"

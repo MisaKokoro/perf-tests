@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${SOURCE_NAME}-data
+  namespace: ${NAMESPACE}
+  labels:
+    app.kubernetes.io/name: proxy-bench-fixed-pool-source
+    app.kubernetes.io/instance: ${SOURCE_NAME}
+    component: dataset
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: proxy-bench-fixed-pool-source
+        app.kubernetes.io/instance: ${SOURCE_NAME}
+        component: dataset
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        kubernetes.io/hostname: ${SOURCE_NODE}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: ${DATA_UID}
+        runAsGroup: ${DATA_GID}
+        fsGroup: ${FS_GROUP}
+      containers:
+        - name: dataset
+          image: ${TOOLS_IMAGE}
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/proxy-bench-data-prepare"]
+          args:
+            - --size
+            - "${B}"
+            - --count
+            - "${N}"
+            - --root
+            - /data/dataset
+            - --base-url
+            - "${BASE_URL}"
+            - --generation-workers
+            - "${GENERATION_WORKERS}"
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: "${DATA_CPU_REQUEST}"
+              memory: "${DATA_MEMORY_REQUEST}"
+            limits:
+              cpu: "${DATA_CPU_LIMIT}"
+              memory: "${DATA_MEMORY_LIMIT}"
+          volumeMounts:
+            - name: source
+              mountPath: /data
+      volumes:
+        - name: source
+          persistentVolumeClaim:
+            claimName: ${PVC_NAME}

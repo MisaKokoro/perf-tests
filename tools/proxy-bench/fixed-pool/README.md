@@ -1,19 +1,27 @@
 # proxy-bench fixed-pool preparation
 
 The fixed-pool mode adds explicitly prepared objects and reusable Range access
-plans to proxy-bench. This directory currently delivers dataset and plan
-preparation. The Kubernetes source deployment bundle, Seed readiness, k6
-execution, and workload Jobs follow separately.
+plans to proxy-bench. This directory delivers dataset and plan preparation, the Kubernetes source
+bundle, and full-pool Seed-cache preparation. k6 execution and workload Jobs
+follow separately.
 
 ## Build
 
 Use the repository's Go 1.25 toolchain; no new Go dependencies are required.
 
 ```bash
-make build-proxy-bench-data-prepare build-proxy-bench-plan-prepare
+make build-proxy-bench-data-prepare build-proxy-bench-plan-prepare build-proxy-bench-seed-cache-prepare
 ./bin/proxy-bench-data-prepare --help
 ./bin/proxy-bench-plan-prepare --help
+./bin/proxy-bench-seed-cache-prepare --help
 ```
+
+`make build-proxy-bench-tools` creates static preparation binaries under
+`bin/proxy-bench-tools/{amd64,arm64}/`. `make docker-build-proxy-bench-tools`
+exports a local multi-platform OCI archive at `bin/proxy-bench-tools-image.tar`;
+it does not publish an image. For a single-platform Docker daemon image, use
+Buildx with `--platform linux/amd64 --load` (or the native arm64 platform) and
+`--build-arg TARGETARCH=amd64` when building the tools Dockerfile manually.
 
 Linux amd64 and arm64 builds are supported. Cross-compilation establishes
 buildability; native arm64 execution and performance require separate validation.
@@ -99,11 +107,12 @@ without a data-volume mount. Reuse that static HTTP serving capability with
 externally generated objects. Create separate fixed-pool resources with distinct
 names, labels, and Service selectors to preserve the original FileServer.
 
-The planned Kubernetes source bundle will supply a shared configuration,
+The Kubernetes source bundle supplies a shared configuration,
 data-generation Job, FileServer/Service templates, an optional PVC example, and
-step-by-step rendering and recovery instructions. Those templates are not yet
-included in this revision. The following layout is the source integration
-contract for the existing standalone data command.
+step-by-step rendering and recovery instructions. Use [the source bundle](deploy/source/README.md) for configuration, whitelisted
+rendering, sequential Job/server deployment, log extraction, manifest export,
+and HTTP checks. The following layout is also the standalone data command
+integration contract.
 
 Use a dedicated business directory inside the source PVC:
 
@@ -129,7 +138,7 @@ Before target cache preparation:
    an explicit routable address for an external Seed. Determine the final address
    once and use it as `--base-url` before generation; generation makes no HTTP
    requests to it.
-2. Run data generation separately from the HTTP server. The planned Job directly
+2. Run data generation separately from the HTTP server. The Job directly
    invokes the existing command with `completions=1`, `parallelism=1`,
    `restartPolicy=Never`, and `backoffLimit=0`. Preserve the actual generation
    Pod's stdout JSON and stderr. Do not publish the source after failed
@@ -278,3 +287,65 @@ plan output directory when an old incompatible plan occupies the input key.
 There are no old command aliases or automatic migrations. Plan checks do not
 read or hash source bodies; keep source storage controlled. Later Seed
 preparation performs full target-body verification.
+
+## Prepare a target Seed cache
+
+After publishing and checking the source, copy
+[the target configuration](examples/target-config.yaml), fill the actual proxy,
+expected server IP, observed instance reference and Client version `v1.5.7`.
+Record the **effective** proxy rules in `proxy-rules.json`, including the actual
+filtered query parameter list, `rewrite_url=false`, and `use_tls=false`. Hash its
+original bytes and place that digest in `proxy_rules_ref.sha256`. A relative
+rules path resolves against the target configuration directory. The tool checks
+this declaration; it does not log in to the Seed to prove the rules or instance.
+
+```bash
+./bin/proxy-bench-seed-cache-prepare \
+  --manifest dataset-manifest.json --target-config target-config.yaml \
+  --out /results/NEW_PREPARATION > target-command-result.json
+```
+
+All three flags are required and have no usable defaults. `--out` is new or
+empty and existing results are never overwritten. `--help`/`-h` exits 0 without
+JSON. Optional YAML `prepare` fields default individually to `concurrency: 1`,
+`request_timeout_ms: 1800000`, and `ready_timeout_ms: 60000`: conservative
+preparation starting points, outside measurement. Values must be positive;
+timeouts use integer milliseconds. Concurrency is bounded by object count.
+
+The HTTP client explicitly selects the proxy, ignores ambient proxy bypass
+settings, disables redirects/decompression and connection-reuse retries, sends
+fixed URL identity headers and prefetch=false, and never supplies a piece length.
+Each object requires a complete 200 response with exact length/SHA, matching
+Dragonfly task/server identity, and a deterministic 206 prefix probe with the
+same task and a true download-finished marker. After all full reads, a second
+pool-wide probe pass checks completion again. Each probe is attempted once;
+missing completion evidence is not repaired by polling or downloading more.
+The true marker describes state at request start and cannot replace full-body
+verification. Different objects must not unexpectedly share a task.
+A task finished timestamp can also be set by a Range-only download while other
+pieces are still missing. Integration validation must inspect actual piece
+coverage; the timestamp does not replace complete-object verification.
+
+The command streams bodies without saving a second copy. On failure it stops
+new object dispatch and lets already started requests finish within their
+configured timeouts; interruption cancels current requests. Retry explicitly
+with a new output directory/preparation ID; cached Seed data is not deleted.
+
+`target-object-results.json` contains every object, known task/IP/received bytes,
+actual digest and timestamps, status and reason. Unknown fields are null.
+`target-preparation.json` is published last and binds the exact manifest digest,
+fixed identity/rules digest, target, method, effective prepare options and the
+object evidence file digest. Stdout has the same preparation record (including
+structured input errors); archive it separately. Status is `ready`, `failed`
+(known failure), or `unverified` (evidence unavailable/unsupported), and only a
+successful full pool can be ready. Exit codes remain 0/2/3/130; unsupported or
+unverified targets exit 3. Preserve failed evidence, then fix and retry rather
+than overwriting it.
+
+These records prove the preparation-end condition only. Operators must verify
+the actual automatic piece length and Range alignment on first integration or
+configuration/version changes, using independent target state. The command does
+not claim to observe actual P or monitor ongoing GC, restarts, page cache, origin
+traffic or background jobs. Freeze target/storage/retention conditions and
+record the instance externally before measuring. Source checks and ordinary
+HTTP 200 responses alone do not establish a ready Seed.

@@ -2,7 +2,8 @@
 
 The fixed-pool mode adds explicitly prepared objects and reusable Range access
 plans to proxy-bench. This directory currently delivers dataset and plan
-preparation. Seed readiness, k6 execution, and Kubernetes Jobs follow separately.
+preparation. The Kubernetes source deployment bundle, Seed readiness, k6
+execution, and workload Jobs follow separately.
 
 ## Build
 
@@ -49,7 +50,10 @@ Both budget arguments must be positive when supplied. Internal zero represents
 an omitted budget; explicitly passing zero is invalid. Omission still reports
 estimates and checks output free space before generating a new plan. Memory
 budgeting is an estimate check, not an OS/container memory limit or a runtime
-RSS monitor. File budgeting checks the estimate before generation and the total
+RSS monitor. Budgets apply to the Go preparation process and all plan files,
+not individual k6 workers. Preparation can run elsewhere; these checks do not
+prove that the load generators have sufficient resources. File budgeting checks
+the estimate before generation and the total
 actual file lengths before publication. See the formulas and limits below.
 
 ## Create a dataset
@@ -61,7 +65,7 @@ are rejected.
 
 ```bash
 ./bin/proxy-bench-data-prepare \
-  --size 64 --count 2 --root /data/fixed-source \
+  --size 64 --count 2 --root /data/dataset \
   --base-url http://source.example.test > dataset-result.json
 ```
 
@@ -83,62 +87,116 @@ before later Seed preparation.
 
 ## Publish the HTTP origin
 
-Origin publication is a required tester action before Seed cache preparation.
-The dataset command writes files and URLs; it does not start nginx, upload data,
-or deploy Kubernetes resources. Independent plan preparation needs only the
-manifest and can run before the origin is online.
+Origin publication is required before Seed cache preparation. The dataset
+command writes files and URLs; it does not start nginx, upload data, or operate
+Kubernetes. Independent plan preparation only needs a manifest copy and can run
+before the origin is online.
 
-The existing [file-server image](../../file-server/Dockerfile) runs nginx and embeds
-zero-filled `/4m`, `/1g`, and other fixtures. Its
-[StatefulSet and Service](../../file-server/file-server.yaml) publish those fixtures
-without a data-volume mount. Fixed-pool uses the same static HTTP serving role,
-with externally generated objects mounted read-only instead of being built into
-the image.
+The existing [file-server image](../../file-server/Dockerfile) runs nginx and
+embeds zero-filled `/4m`, `/1g`, and other fixtures. Its original
+[StatefulSet and Service](../../file-server/file-server.yaml) serve those fixtures
+without a data-volume mount. Reuse that static HTTP serving capability with
+externally generated objects. Create separate fixed-pool resources with distinct
+names, labels, and Service selectors to preserve the original FileServer.
+
+The planned Kubernetes source bundle will supply a shared configuration,
+data-generation Job, FileServer/Service templates, an optional PVC example, and
+step-by-step rendering and recovery instructions. Those templates are not yet
+included in this revision. The following layout is the source integration
+contract for the existing standalone data command.
+
+Use a dedicated business directory inside the source PVC:
+
+| Location | Path |
+|---|---|
+| Writable PVC mount in the generation task | `/data` |
+| Dataset command root | `/data/dataset` |
+| Generated objects | `/data/dataset/objects/sha256/DIGEST` |
+| Generated manifest | `/data/dataset/manifests/MANIFEST_ID/dataset-manifest.json` |
+| nginx object directory | `/usr/share/nginx/html/objects` |
+| Read-only dataset mount for manifest retrieval | `/fixed-pool-data` |
+
+Only `/data/dataset` must be empty or absent; the PVC root may contain unrelated
+entries such as `lost+found`. Generate on the final source volume to avoid copying
+the object pool between machines. If using another location, transfer the files
+without changing bytes or paths before serving them.
 
 Before target cache preparation:
 
-1. Choose a stable source address reachable by the Seed and storage usable by
-   the origin container. Use that address as `--base-url` when generating data.
-2. Generate the dataset on that storage, or copy its complete `objects/` directory
-   there without changing bytes or paths. A workstation directory is not
-   automatically available on a container host or Kubernetes node.
-3. Mount the generated `objects/` directory at
-   `/usr/share/nginx/html/objects` and start or update the file server. Keep the
-   original Service/address when reusing an existing origin.
-4. From the Seed's network, check that manifest URLs resolve and return the
-   correct full objects, HEAD metadata, and Range responses. Then invoke the
-   separate Seed cache preparation step.
+1. Choose storage, permissions, and a stable address reachable from the Seed.
+   For an in-cluster Seed, an example is
+   `http://SOURCE_NAME.NAMESPACE.svc.cluster.local`; adjust the DNS domain or use
+   an explicit routable address for an external Seed. Determine the final address
+   once and use it as `--base-url` before generation; generation makes no HTTP
+   requests to it.
+2. Run data generation separately from the HTTP server. The planned Job directly
+   invokes the existing command with `completions=1`, `parallelism=1`,
+   `restartPolicy=Never`, and `backoffLimit=0`. Preserve the actual generation
+   Pod's stdout JSON and stderr. Do not publish the source after failed
+   generation, and do not use a generation initContainer on the server.
+3. After successful generation and release of its volume mount, start a separate
+   FileServer and Service on the same PVC. Follow the PVC access mode and storage
+   topology; RWX is not required, and RWO does not mean only one Pod. Confirm the
+   pinned image's nginx root and listening port before setting Service targetPort.
+4. Retrieve the manifest identified by the generation result as described below.
+   From the Seed's network, check a representative manifest URL: full GET length
+   and SHA-256, HEAD metadata, and Range status 206, Content-Range, length, and
+   bytes. Pod readiness alone is insufficient. Sampling does not verify the
+   whole pool; separate Seed preparation performs full-pool validation.
 
-For Kubernetes, the following additions assume a PVC whose root is the dataset
-root and already contains `objects/`. Add `volumeMounts` to the existing
-file-server container and `volumes` to its Pod spec:
+The service container mounts only the objects under the HTTP root and also
+mounts the dataset outside that root for manifest retrieval:
 
 ```yaml
-# Existing file-server container
+# Separate fixed-pool file-server container
 volumeMounts:
   - name: fixed-pool-source
     mountPath: /usr/share/nginx/html/objects
-    subPath: objects
+    subPath: dataset/objects
+    readOnly: true
+  - name: fixed-pool-source
+    mountPath: /fixed-pool-data
+    subPath: dataset
     readOnly: true
 
-# Existing Pod spec
+# Its Pod spec
 volumes:
   - name: fixed-pool-source
     persistentVolumeClaim:
       claimName: fixed-pool-source
 ```
 
-This preserves existing `/4m` and `/1g` fixtures while adding
-`BASE_URL/objects/sha256/DIGEST`. With Docker, bind-mount the generated `objects/`
-directory at the same nginx location, read-only, and publish the HTTP port for
-the Seed's network. Choose the same pinned file-server image as the test
-environment. A Kubernetes Service provides its configured cluster reachability;
-an external Seed needs an address routable from its own network.
+This adds `BASE_URL/objects/sha256/DIGEST` while preserving the image's original
+fixtures. Manifests are not published as HTTP files. Use the returned
+`manifest.path`, not a scan for the newest manifest: a generation path
+`/data/dataset/manifests/ID/dataset-manifest.json` maps to
+`/fixed-pool-data/manifests/ID/dataset-manifest.json` in the service container.
+For example, with `SERVICE_POD` and `MANIFEST_ID` taken from the actual deployment
+and successful generation result:
 
-Keep source contents and addresses unchanged while reusing a dataset. A failed
-Seed preparation can be retried against the same origin; ordinary RATE changes
-do not require regeneration or origin redeployment. This step is static HTTP
-publication and does not use the container Registry upload API.
+```bash
+kubectl exec -n "$NAMESPACE" "$SERVICE_POD" -- \
+  cat "/fixed-pool-data/manifests/$MANIFEST_ID/dataset-manifest.json" \
+  > dataset-manifest.json
+sha256sum dataset-manifest.json
+```
+
+Require a successful export and compare the digest to the generation result's
+`manifest.sha256` before passing this copy to plan or Seed preparation. Exporting
+the manifest does not require copying the source objects. A workstation path is
+not automatically available on a container host or cluster node. With Docker,
+bind-mount the same object and dataset directories read-only at the nginx and
+manifest locations above, and publish a port reachable from the Seed.
+
+Keep the source URL and bytes stable. Server, mount, or network failures require
+repairing the service, not rerunning successful data generation. Restarting the
+server never regenerates objects. Changes to RATE or R/W reuse the source;
+B/N changes require a new dataset. A changed source address must not silently
+rewrite the published manifest: restore the original endpoint, or create a new
+dataset for the new address. Generation failures retain artifacts under the
+existing failure rules; do not automatically adopt them. Deleting a Job or
+restarting a service must not delete the PVC. Archive the rendered resources,
+image digests, generation logs, exported manifest, and HTTP check evidence.
 
 ## Prepare or reuse an access plan
 
@@ -146,14 +204,16 @@ Pass the manifest path from the dataset result to the independent plan command:
 
 ```bash
 ./bin/proxy-bench-plan-prepare \
-  --manifest /data/fixed-source/manifests/RETURNED_ID/dataset-manifest.json \
+  --manifest /data/dataset/manifests/RETURNED_ID/dataset-manifest.json \
   --range 16 --workers 3 --plan-dir /data/fixed-plans > plan-result.json
 ```
 
 Only the manifest is needed: source object files, a source root, target
 configuration, and Seed access are unnecessary. A copied manifest works without
 the original body directory. B/N and object URLs come from the validated input.
-The default worker count is 1. R/W changes generate a separate plan. RATE and
+Object size must be divisible by Range size; invalid geometry is rejected
+without selecting a different Range. The default worker count is 1.
+R/W changes generate a separate plan. RATE and
 duration are absent from preparation; rate allocation is shared Go code for the
 later worker entry point.
 

@@ -357,7 +357,14 @@ HTTP source and ready Seed evidence. No object bodies are mounted in the worker.
 The new Job uses the same proxy-bench image with an explicit command; the image's
 original entrypoint and repeat/random/sequential modes remain available.
 
-Build the image for a local native amd64 Docker daemon:
+Use an image built from a fixed-pool-capable revision and pin its digest in the
+Job. The existing published `dragonflyoss/proxy-bench:v2.0.0` image does not
+contain this entrypoint. This development delivery has no published fixed-pool
+image; a builder must provide one to the test cluster. Reuse that image across
+runs with the same code; testers do not need to rebuild it for each test.
+
+If no suitable image is available, the builder can build one for a local native
+amd64 Docker daemon with Go and Docker Buildx:
 
 ```bash
 make build-proxy-bench-tools

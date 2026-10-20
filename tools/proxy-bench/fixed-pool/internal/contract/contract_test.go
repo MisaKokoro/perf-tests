@@ -88,6 +88,34 @@ func TestStrictManifest(t *testing.T) {
 	}
 }
 
+func TestNullableRecordsRemainStrict(t *testing.T) {
+	// Explicit null means an unknown observation, not a missing required field.
+	type record struct {
+		Code    *int           `json:"exit_code"`
+		State   string         `json:"state"`
+		Native  map[string]any `json:"native"`
+		Message string         `json:"message,omitempty"`
+	}
+	valid := `{"exit_code":null,"state":"unknown","native":{"metric":null}}`
+	var got record
+	if err := DecodeRecord([]byte(valid), &got); err != nil || got.Code != nil || got.State != "unknown" {
+		t.Fatalf("%+v: %v", got, err)
+	}
+	for _, raw := range []string{
+		`{"state":"unknown","native":{}}`,
+		`{"exit_code":null,"state":null,"native":{}}`,
+		`{"exit_code":null,"state":"unknown","native":null}`,
+		`{"exit_code":null,"state":"unknown","native":{},"extra":1}`,
+		`{"exit_code":null,"exit_code":0,"state":"unknown","native":{}}`,
+		`{"exit_code":null,"state":"unknown","native":{"x":1,"x":2}}`,
+		valid + `{}`,
+	} {
+		if err := DecodeRecord([]byte(raw), &got); err == nil {
+			t.Fatalf("accepted ambiguous/incomplete record: %s", raw)
+		}
+	}
+}
+
 func TestSourceURL(t *testing.T) {
 	for _, input := range []string{"", "https://source.example", "http://user:pass@source.example", "http://source.example?a=b", "http://source.example?", "http://source.example#", "http://LOCALHOST.", "http://x.localhost", "http://127.0.0.1", "http://[::1]", "http://[::ffff:127.0.0.1]", "http://source.example:0", "http://source.example:65536"} {
 		if _, err := NormalizeBaseURL(input); err == nil {

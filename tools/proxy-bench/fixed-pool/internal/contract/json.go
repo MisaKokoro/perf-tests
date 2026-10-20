@@ -51,7 +51,7 @@ func Encode(value any) ([]byte, error) {
 func Decode(data []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	if err := checkValue(decoder); err != nil {
+	if err := checkValue(decoder, false); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
@@ -65,12 +65,12 @@ func Decode(data []byte, value any) error {
 	return requiredFields(data, reflect.TypeOf(value).Elem(), "$")
 }
 
-func checkValue(decoder *json.Decoder) error {
+func checkValue(decoder *json.Decoder, nullable bool) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return err
 	}
-	if token == nil {
+	if token == nil && !nullable {
 		return fmt.Errorf("null is not allowed")
 	}
 	delimiter, ok := token.(json.Delim)
@@ -90,13 +90,13 @@ func checkValue(decoder *json.Decoder) error {
 				return fmt.Errorf("duplicate or invalid JSON key %q", key)
 			}
 			seen[name] = true
-			if err := checkValue(decoder); err != nil {
+			if err := checkValue(decoder, nullable); err != nil {
 				return err
 			}
 		}
 	case '[':
 		for decoder.More() {
-			if err := checkValue(decoder); err != nil {
+			if err := checkValue(decoder, nullable); err != nil {
 				return err
 			}
 		}
@@ -138,6 +138,76 @@ func requiredFields(data []byte, typ reflect.Type, location string) error {
 		}
 		for i, entry := range entries {
 			if err := requiredFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// DecodeRecord applies the same ambiguity checks to execution/preparation records,
+// where pointer fields explicitly represent unknown values. Input contracts keep
+// using Decode, which rejects null everywhere.
+func DecodeRecord(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := checkValue(decoder, true); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return fmt.Errorf("expected end of JSON")
+	}
+	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	return recordFields(data, reflect.TypeOf(value).Elem(), "$")
+}
+func recordFields(data []byte, typ reflect.Type, location string) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		if typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Interface {
+			return nil
+		}
+		return fmt.Errorf("%s: null is not allowed", location)
+	}
+	if typ.Kind() == reflect.Pointer {
+		return recordFields(data, typ.Elem(), location)
+	}
+	switch typ.Kind() {
+	case reflect.Struct:
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return err
+		}
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			tag := strings.Split(field.Tag.Get("json"), ",")
+			name := tag[0]
+			if !field.IsExported() || name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			raw, ok := fields[name]
+			if !ok {
+				if len(tag) > 1 && tag[1] == "omitempty" {
+					continue
+				}
+				return fmt.Errorf("%s.%s: required field missing", location, name)
+			}
+			if err := recordFields(raw, field.Type, location+"."+name); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		var entries []json.RawMessage
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return err
+		}
+		for i, entry := range entries {
+			if err := recordFields(entry, typ.Elem(), fmt.Sprintf("%s[%d]", location, i)); err != nil {
 				return err
 			}
 		}

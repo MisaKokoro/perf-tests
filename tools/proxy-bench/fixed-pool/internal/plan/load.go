@@ -35,7 +35,15 @@ func Load(ctx context.Context, name string, manifest contract.Manifest, manifest
 	return load(ctx, name, manifest, manifestSHA, nil)
 }
 
-func load(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32) (p contract.Plan, raw []byte, actual uint64, err error) {
+// LoadWorker validates common metadata and only the selected shard's bytes.
+// Other workers' files need not be mounted in this process.
+func LoadWorker(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, worker uint64) (contract.Plan, []byte, uint64, error) {
+	return loadSelected(ctx, name, manifest, manifestSHA, nil, &worker)
+}
+func load(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32) (contract.Plan, []byte, uint64, error) {
+	return loadSelected(ctx, name, manifest, manifestSHA, expected, nil)
+}
+func loadSelected(ctx context.Context, name string, manifest contract.Manifest, manifestSHA string, expected []uint32, selected *uint64) (p contract.Plan, raw []byte, actual uint64, err error) {
 	raw, err = os.ReadFile(name)
 	if err != nil {
 		return p, nil, 0, err
@@ -55,6 +63,9 @@ func load(ctx context.Context, name string, manifest contract.Manifest, manifest
 	}
 	if p.ObjectsFile.Path != "object-urls.json" || !contract.ValidDigest(p.ObjectsFile.SHA256) {
 		return p, nil, 0, fmt.Errorf("invalid objects_file reference")
+	}
+	if selected != nil && *selected >= p.WorkerCount {
+		return p, nil, 0, fmt.Errorf("WORKER_ID outside plan worker_count")
 	}
 	directory := filepath.Dir(name)
 	objects, err := os.ReadFile(filepath.Join(directory, "object-urls.json"))
@@ -87,6 +98,9 @@ func load(ctx context.Context, name string, manifest contract.Manifest, manifest
 	for worker, shard := range p.Shards {
 		if shard.WorkerID != uint64(worker) || shard.RegionCount != ShardCount(total, p.WorkerCount, uint64(worker)) || shard.Path != "shards/"+strconv.Itoa(worker)+".json" || !contract.ValidDigest(shard.SHA256) {
 			return p, nil, 0, fmt.Errorf("shard %d metadata mismatch", worker)
+		}
+		if selected != nil && *selected != uint64(worker) {
+			continue
 		}
 		length, err := checkShard(ctx, filepath.Join(directory, filepath.FromSlash(shard.Path)), shard, total, seen, expected, p.WorkerCount)
 		if err != nil {

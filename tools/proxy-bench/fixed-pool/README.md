@@ -1,9 +1,9 @@
-# proxy-bench fixed-pool preparation
+# proxy-bench fixed-pool
 
 The fixed-pool mode adds explicitly prepared objects and reusable Range access
 plans to proxy-bench. This directory delivers dataset and plan preparation, the Kubernetes source
-bundle, and full-pool Seed-cache preparation. k6 execution and workload Jobs
-follow separately.
+bundle, full-pool Seed-cache preparation, and single-worker k6 execution with
+automatic native and derived reports.
 
 ## Build
 
@@ -16,7 +16,7 @@ make build-proxy-bench-data-prepare build-proxy-bench-plan-prepare build-proxy-b
 ./bin/proxy-bench-seed-cache-prepare --help
 ```
 
-`make build-proxy-bench-tools` creates static preparation binaries under
+`make build-proxy-bench-tools` creates static preparation and worker-support binaries under
 `bin/proxy-bench-tools/{amd64,arm64}/`. `make docker-build-proxy-bench-tools`
 exports a local multi-platform OCI archive at `bin/proxy-bench-tools-image.tar`;
 it does not publish an image. For a single-platform Docker daemon image, use
@@ -349,3 +349,131 @@ not claim to observe actual P or monitor ongoing GC, restarts, page cache, origi
 traffic or background jobs. Freeze target/storage/retention conditions and
 record the instance externally before measuring. Source checks and ordinary
 HTTP 200 responses alone do not establish a ready Seed.
+
+## Run a prepared single-worker test
+
+Use `proxy-bench-fixed-pool.yaml` after preparing the dataset, a **W=1** plan,
+HTTP source and ready Seed evidence. No object bodies are mounted in the worker.
+The new Job uses the same proxy-bench image with an explicit command; the image's
+original entrypoint and repeat/random/sequential modes remain available.
+
+Build the image for a local native amd64 Docker daemon:
+
+```bash
+make build-proxy-bench-tools
+docker buildx build --platform linux/amd64 --load -t localhost/proxy-bench:fixed-pool \
+  -f tools/proxy-bench/Dockerfile .
+```
+
+Use the native arm64 platform on arm64. Make the image available to your cluster
+and pin its digest in the Job. An operator may use `examples/input-pvc.yaml` to create an input PVC and a
+temporary transfer Pod, copy metadata with tar through `kubectl exec -i`, then
+delete only the helper Pod. This is a separate operator action; the worker never
+creates it. On a node-local ReadWriteOnce volume, schedule the worker on the
+volume's node. The input PVC must contain this metadata layout:
+
+```text
+/inputs/
+  dataset-manifest.json
+  plan/request-plan.json
+  plan/object-urls.json
+  plan/shards/0.json
+  target-config.yaml
+  proxy-rules.json
+  target-preparation.json
+  target-object-results.json
+```
+
+Copy the entire prepared plan directory into `plan/` and the preparation's two
+JSON files together. Preserve the target configuration's rules reference. Edit
+the Job's image, PVC name, proxy, total RATE, DURATION and RUN_ID, then submit it:
+
+```bash
+kubectl apply -f proxy-bench-fixed-pool.yaml
+kubectl get pods -l job-name=proxy-bench-fixed-pool-run-001
+```
+
+Wait for the container to start or finish before collecting its logs. A short Job
+may already be Completed; it need not become Ready again. For Pending,
+ContainerCreating or ImagePullBackOff, inspect Pod events first. Then collect:
+
+```bash
+kubectl logs -f job/proxy-bench-fixed-pool-run-001 > worker-0.log
+kubectl get job proxy-bench-fixed-pool-run-001
+```
+
+The Job checks the saved input relationships before running k6. It does not
+contact Seed for a new preparation check or create other Jobs. The template
+uses a read-only input PVC, writable result emptyDir, no service-account token,
+no elevated capabilities, no restart and no Job-level retry. Preserve the Job
+logs before deleting it; use a writable PVC instead of emptyDir if result files
+must survive Pod deletion.
+
+Each iteration calls `http.get` once, with no business-layer retry or redirect.
+Connection reuse remains enabled. The native k6/Go HTTP transport can transparently
+resend an idempotent GET when a reused connection fails before response headers.
+This uses the same URL and Range and does not consume another plan item. Native
+`http_reqs`, QPS and duration retain their original semantics; physical GET counts
+observed at the proxy can differ. The controlled regression includes this case.
+
+### Worker configuration
+
+| Environment | Requirement/default | Purpose |
+|---|---|---|
+| MANIFEST, PLAN | Required, no default | Dataset and request-plan paths |
+| TARGET_CONFIG, TARGET_PREPARATION | Required, no default | Target/rules and ready evidence |
+| HTTP_PROXY | Required, equal to target.proxy | Actual HTTP proxy; bypass variables are removed |
+| RATE | Required positive integer, at most 2147483647 | Total run rate; allocated by shard size |
+| RUN_ID | Required, 1..128 letters/digits/._-, starts alphanumeric | New identity for each run |
+| WORKER_ID | 0 | Select own shard; below plan W |
+| DURATION | 300s | Starting duration; freeze for experimental comparisons |
+| TIMEOUT | 30s | Per-request timeout |
+| GRACEFUL_STOP | TIMEOUT + 5s | Engineering allowance; explicit value must exceed TIMEOUT |
+| PRE_ALLOCATED_VUS, MAX_VUS | 64, 512 | Existing proxy-bench starting points; max must cover preallocation |
+| RESULT_DIR | /results | Writable, initially empty; existing results are never overwritten |
+
+Durations must be positive and representable as whole milliseconds. An explicitly
+empty or malformed value is rejected. MODE/RANGE, legacy load knobs, extra
+identity overrides, unknown `PROXY_BENCH_*` variables and `K6_*` overrides are
+rejected (`K6_NO_USAGE_REPORT` is the only allowed k6 variable). Other operating
+system/service variables are not load parameters. The internal worker-support
+subcommands are called automatically; operators do not run them as an extra step.
+
+### Read the result
+
+The worker writes run-spec, worker-spec, k6-summary, worker-execution and
+worker-summary JSON files into RESULT_DIR. Logs contain each record once, using
+`PROXY_BENCH_FIXED_POOL_` followed by `RUN_SPEC_V1`, `WORKER_SPEC_V1`,
+`K6_SUMMARY_V1`, `WORKER_EXIT_V1` or `WORKER_RESULT_V1`, then a space and JSON.
+An input/output error may additionally use `ERROR_V1`. Schemas are in `schemas/`.
+
+The readable metric rows and JSON use the same native k6 values. QPS includes
+failed requests; success means k6's expected status 206 with no transport failure.
+No request-body hash or per-request length check is added. Known failed requests
+still consume their plan positions. Only a complete normal execution with
+consistent counters establishes exact logical coverage. Interrupted or uncertain
+runs retain metrics and use null coverage with a reason.
+
+Exit 0 means the action produced its required results, not that capacity or
+service-quality criteria passed. Input errors exit 2, execution/publication
+failures 3, missing/invalid required results 4, and handled interruption 130;
+priority is 130, 2, 3, 4, 0. All errors and the raw k6 exit code are retained.
+The fixed-pool script has no built-in performance thresholds. SIGKILL, OOM or
+node loss can prevent final records; obtain Pod status separately.
+
+## Controlled execution regression
+
+With the preparation binaries, worker-support and **k6 2.3.0** on PATH:
+
+```bash
+python3 tools/proxy-bench/fixed-pool/tests/integration.py --work-dir /tmp/fixed-pool-regression-new
+```
+
+This retains normal, transparent transport resend, wrong-status, redirect, truncated-body, timeout, mixed,
+same-length wrong-body, dropped, dynamic-VU, interrupted, threshold-failed and
+script-abort runs, plus mismatched-input and incomplete-result cases. Numbering
+checks use an explicitly instrumented **test copy** with an iteration header;
+the production script has no per-request trace or iteration tag. The gap case
+pauses between acquiring an iteration number and incrementing the Counter.
+The controlled proxy implements preparation headers for protocol tests only;
+it is not a substitute for validation against a real Seed.

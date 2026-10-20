@@ -468,6 +468,34 @@ priority is 130, 2, 3, 4, 0. All errors and the raw k6 exit code are retained.
 The fixed-pool script has no built-in performance thresholds. SIGKILL, OOM or
 node loss can prevent final records; obtain Pod status separately.
 
+## Run independent workers
+
+Prepare a plan with `--workers W`, then copy the existing Job template once per
+worker. Each Job must have a distinct name, `WORKER_ID` in `0..W-1`, a separate
+writable result volume, and the same RUN_ID, total RATE, DURATION, target and
+byte-identical common inputs. Keep `backoffLimit: 0` and `restartPolicy: Never`.
+Do not use Job parallelism to create copies with the default worker ID 0.
+
+For two equal shards and RATE=21, set **RATE=21 in both Jobs**. Their effective
+worker-spec rates are 11 and 10, respectively. Each worker loops only its own
+shard. It never waits for, restarts or compensates for another worker.
+Metadata may be shared read-only; node-local RWO volumes require compatible
+placement. No object bodies need to be copied to a worker.
+
+Collect each Job's logs and Pod status separately. Check that worker IDs are
+complete and unique, run-spec snapshots agree, and actual execution intervals
+overlap as intended. Same RUN_ID and DURATION alone do not establish overlap.
+Missing, duplicate, mixed-run or truncated records must not be treated as a
+complete multi-worker experiment. A rerun uses a new RUN_ID for all workers.
+
+With W>1, top-level `aggregate` and `coverage` are null. Read this worker's
+values from `workers[0].metrics` and `workers[0].coverage`; its coverage ratio
+uses its own shard size. `result_complete` describes this worker only. Preserve
+each worker's native QPS, P99/P50, actual duration and exit facts. There is no
+cross-worker report or summarize command. An operator may choose a separate
+aggregation method; averaging per-worker percentiles does not yield an overall
+percentile, and a missing worker is not a zero-valued worker.
+
 ## Controlled execution regression
 
 With the preparation binaries, worker-support and **k6 2.3.0** on PATH:
@@ -475,6 +503,17 @@ With the preparation binaries, worker-support and **k6 2.3.0** on PATH:
 ```bash
 python3 tools/proxy-bench/fixed-pool/tests/integration.py --work-dir /tmp/fixed-pool-regression-new
 ```
+
+The independent-process regression uses the same prerequisites and preserves
+two/three-worker request records, native results and fault cases:
+
+```bash
+python3 tools/proxy-bench/fixed-pool/tests/multi_worker.py --work-dir /tmp/fixed-pool-multi-new
+```
+
+It checks loops, uneven shards and integer rates, invalid input, interruption,
+missing summaries, dropped iterations and intentionally staggered starts. Test
+copies label requests with worker/iteration headers; production scripts do not.
 
 This retains normal, transparent transport resend, wrong-status, redirect, truncated-body, timeout, mixed,
 same-length wrong-body, dropped, dynamic-VU, interrupted, threshold-failed and

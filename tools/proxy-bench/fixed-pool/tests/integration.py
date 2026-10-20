@@ -26,8 +26,8 @@ from urllib.parse import urlsplit
 class Proxy(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, directory):
-        super().__init__(("127.0.0.1", 0), Handler)
+    def __init__(self, directory, address=("127.0.0.1", 0)):
+        super().__init__(address, Handler)
         self.directory, self.mode, self.records = directory, "normal", []
         self.lock = threading.Lock()
         self.resend_closed = False
@@ -53,6 +53,7 @@ class Handler(BaseHTTPRequestHandler):
         with server.lock:
             mode = server.mode
             server.records.append({"url": self.path, "method": "GET", "version": self.request_version,
+                                   "received_at": time.time(),
                                    "range": range_value, "headers": dict(self.headers),
                                    "iteration": self.headers.get("X-Acceptance-Iteration"), "mode": mode})
             index = len(server.records)

@@ -7,6 +7,7 @@ cannot establish real Dragonfly semantics or performance capacity.
 """
 import argparse
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -107,8 +108,70 @@ def write(path, value):
     path.write_text(json.dumps(value, separators=(",", ":")) + "\n")
 
 
+def stop_process(process):
+    """Stop only the session created for this test, including shell children."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait(timeout=5)
+
+
+@contextmanager
+def managed_process(args, **kwargs):
+    process = subprocess.Popen(args, start_new_session=True, **kwargs)
+    try:
+        yield process
+    finally:
+        stop_process(process)
+
+
+def run_command(args, timeout=60, **kwargs):
+    with managed_process(args, **kwargs) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            stop_process(process)
+            stdout, stderr = process.communicate(timeout=5)
+            raise subprocess.TimeoutExpired(args, timeout, output=stdout, stderr=stderr) from None
+        return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+
+
+@contextmanager
+def running_proxy(directory, address=("127.0.0.1", 0)):
+    server = Proxy(directory, address)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def replace_once(source, old, new):
+    assert source.count(old) == 1, f"test instrumentation anchor changed: {old}"
+    return source.replace(old, new)
+
+
 def invoke(args, directory):
-    completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    try:
+        completed = run_command(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.TimeoutExpired as error:
+        (directory / "stdout.log").write_text(error.output or "")
+        (directory / "stderr.log").write_text(error.stderr or "")
+        write(directory / "command.json", {"argv": [str(a) for a in args], "timed_out": True,
+                                          "timeout_seconds": error.timeout})
+        raise
     (directory / "stdout.log").write_text(completed.stdout)
     (directory / "stderr.log").write_text(completed.stderr)
     write(directory / "command.json", {"argv": [str(a) for a in args], "exit_code": completed.returncode})
@@ -130,9 +193,7 @@ def main():
     data = invoke(["proxy-bench-data-prepare", "--size", "65536", "--count", "2",
                    "--root", str(root / "data"), "--base-url", "http://fixture.invalid"], data_log)
     manifest = Path(data["manifest"]["path"])
-    server = Proxy(root / "data")
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
+    with running_proxy(root / "data") as server:
         rules_path = root / "proxy-rules.json"
         write(rules_path, {"schema_version": 1, "filtered_query_params": [], "rewrite_url": False, "use_tls": False})
         proxy_url = f"http://127.0.0.1:{server.server_port}"
@@ -169,21 +230,21 @@ def main():
                 workload = case / "instrumented"
                 shutil.copytree(scripts, workload, ignore=shutil.ignore_patterns("internal", "cmd", "tests", "deploy", "schemas"))
                 source = (workload / "benchmark.js").read_text()
-                source = source.replace("import http from 'k6/http';", "import { sleep } from 'k6';\nimport http from 'k6/http';")
-                source = source.replace("headers: { ...spec.headers, Range: request.range },",
+                source = replace_once(source, "import http from 'k6/http';", "import { sleep } from 'k6';\nimport http from 'k6/http';")
+                source = replace_once(source, "headers: { ...spec.headers, Range: request.range },",
                                         "headers: { ...spec.headers, Range: request.range, 'X-Acceptance-Iteration': String(exec.scenario.iterationInInstance) },")
                 if name == "threshold-failed":
-                    source = source.replace("  discardResponseBodies: true,", "  thresholds: { http_req_failed: ['rate<0'] },\n  discardResponseBodies: true,")
+                    source = replace_once(source, "  discardResponseBodies: true,", "  thresholds: { http_req_failed: ['rate<0'] },\n  discardResponseBodies: true,")
                 if name == "script-abort":
-                    source = source.replace("  consumed.add(1);", "  if (exec.scenario.iterationInInstance === 1) exec.test.abort('acceptance script failure');\n  consumed.add(1);")
+                    source = replace_once(source, "  consumed.add(1);", "  if (exec.scenario.iterationInInstance === 1) exec.test.abort('acceptance script failure');\n  consumed.add(1);")
                 if name == "number-gap":
-                    source = source.replace("  consumed.add(1);", "  if (exec.scenario.iterationInInstance === 1) sleep(10);\n  consumed.add(1);")
+                    source = replace_once(source, "  consumed.add(1);", "  if (exec.scenario.iterationInInstance === 1) sleep(10);\n  consumed.add(1);")
                 (workload / "benchmark.js").write_text(source)
             server.mode = mode
             server.resend_closed = False
             offset = len(server.records)
-            with (case / "worker.log").open("w") as log:
-                process = subprocess.Popen(["/bin/sh", str(workload / "run-benchmark.sh")], env=env, stdout=log, stderr=subprocess.STDOUT)
+            with (case / "worker.log").open("w") as log, managed_process(
+                    ["/bin/sh", str(workload / "run-benchmark.sh")], env=env, stdout=log, stderr=subprocess.STDOUT) as process:
                 if interrupt is not None:
                     deadline = time.monotonic() + 30
                     while len(server.records) == offset and process.poll() is None and time.monotonic() < deadline:
@@ -333,8 +394,8 @@ def main():
                               "worker": ("WORKER_ID", "1"), "mode": ("MODE", "repeat"), "range": ("RANGE", "0-1")}[name]
                 env[key] = value
             before = len(server.records)
-            completed = subprocess.run(["/bin/sh", str(scripts / "run-benchmark.sh")], env=env,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+            completed = run_command(["/bin/sh", str(scripts / "run-benchmark.sh")], env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             (case / "worker.log").write_text(completed.stdout)
             assert completed.returncode == 2, (name, completed.stdout)
             assert len(server.records) == before and not (case / "results/worker-spec.json").exists()
@@ -353,7 +414,7 @@ def main():
             write(case / "dataset-manifest.json", changed)
             args = ["proxy-bench-plan-prepare", "--manifest", str(case / "dataset-manifest.json"),
                     "--range", "16384", "--plan-dir", str(case / "plans")]
-            completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            completed = run_command(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             (case / "stdout.log").write_text(completed.stdout)
             (case / "stderr.log").write_text(completed.stderr)
             write(case / "command.json", {"argv": args, "exit_code": completed.returncode})
@@ -381,9 +442,9 @@ def main():
                 summary["native_summary"]["metrics"]["dropped_iterations"] = {"values": {}}
                 write(summary_path, summary)
             env = {"PATH": os.environ["PATH"], "RESULT_DIR": str(case)}
-            completed = subprocess.run(["proxy-bench-worker-support", "write-report", "--started-at", old_execution["process_started_at"],
+            completed = run_command(["proxy-bench-worker-support", "write-report", "--started-at", old_execution["process_started_at"],
                                         "--ended-at", old_execution["process_ended_at"], "--exit-code", "0", "--reason", "completed"],
-                                       env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
+                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             (case / "report.log").write_text(completed.stdout)
             result = read(case / "worker-summary.json")
             assert completed.returncode == 4 and not result["result_complete"] and result["coverage"] is None
@@ -393,9 +454,6 @@ def main():
         write(root / "result.json", {"k6_version": "2.3.0", "fixture_only": True, "cases": results})
         print(json.dumps({"work_dir": str(root), "passed": len(results), "rejected_inputs": len(rejected),
                           "rejected_plan_inputs": len(rejected_plans), "incomplete_results": len(incomplete)}))
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 if __name__ == "__main__":

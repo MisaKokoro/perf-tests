@@ -498,6 +498,11 @@ percentile, and a missing worker is not a zero-valued worker.
 
 ## Controlled execution regression
 
+For execution triggers, prerequisites, scope and retained results, see
+[the regression guide](tests/README.md). Run both suites before merging fixed-pool
+changes or submitting a phase for acceptance. These are functional checks, not a
+capacity benchmark or a replacement for real Seed and Kubernetes validation.
+
 With the preparation binaries, worker-support and **k6 2.3.0** on PATH:
 
 ```bash

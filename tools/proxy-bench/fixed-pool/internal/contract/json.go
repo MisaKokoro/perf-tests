@@ -130,6 +130,11 @@ func requiredFields(data []byte, typ reflect.Type, location string) error {
 			if err := requiredFields(raw, field.Type, location+"."+name); err != nil {
 				return err
 			}
+			delete(fields, name)
+		}
+		// encoding/json folds field names even with DisallowUnknownFields.
+		if len(fields) != 0 {
+			return fmt.Errorf("%s: unknown or case-aliased JSON field", location)
 		}
 	case reflect.Slice, reflect.Array:
 		var entries []json.RawMessage
@@ -200,6 +205,11 @@ func recordFields(data []byte, typ reflect.Type, location string) error {
 			if err := recordFields(raw, field.Type, location+"."+name); err != nil {
 				return err
 			}
+			delete(fields, name)
+		}
+		// Enforce exact wire names for nullable records as well.
+		if len(fields) != 0 {
+			return fmt.Errorf("%s: unknown or case-aliased JSON field", location)
 		}
 	case reflect.Slice, reflect.Array:
 		var entries []json.RawMessage

@@ -291,12 +291,12 @@ def main():
         write(root / "zero-dropped-cases.json", zero_dropped_cases)
 
         rejected = []
-        for name in ("nonready", "manifest", "identity", "target", "evidence", "plan-manifest",
+        for name in ("nonready", "manifest", "identity", "target", "evidence", "record-alias", "plan-manifest",
                      "shard-order", "object-urls", "proxy", "rate", "worker", "mode", "range"):
             case = root / ("reject-" + name)
             case.mkdir()
             env = {**base, "RUN_ID": "reject-" + name, "RESULT_DIR": str(case / "results")}
-            if name in ("nonready", "manifest", "identity", "target", "evidence"):
+            if name in ("nonready", "manifest", "identity", "target", "evidence", "record-alias"):
                 prepared = read(root / "target/target-preparation.json")
                 shutil.copy(root / "target/target-object-results.json", case / "target-object-results.json")
                 if name == "nonready":
@@ -307,6 +307,8 @@ def main():
                     prepared["identity_sha256"] = "0" * 64
                 elif name == "target":
                     prepared["target"]["instance_ref"] = "other-instance"
+                elif name == "record-alias":
+                    prepared["STATUS"] = prepared["status"]
                 else:
                     prepared["evidence_file"]["sha256"] = "0" * 64
                 write(case / "target-preparation.json", prepared)
@@ -338,6 +340,26 @@ def main():
             assert "PROXY_BENCH_FIXED_POOL_ERROR_V1" in completed.stdout
             rejected.append(name)
         write(root / "rejected-inputs.json", rejected)
+        rejected_plans = []
+        for alias in ("SCHEMA_VERSION", "BLOCK_BYTES"):
+            case = root / ("reject-plan-alias-" + alias.lower())
+            case.mkdir()
+            changed = read(manifest)
+            if alias == "SCHEMA_VERSION":
+                changed[alias] = changed["schema_version"]
+            else:
+                changed["generator"][alias] = changed["generator"]["block_bytes"]
+            write(case / "dataset-manifest.json", changed)
+            args = ["proxy-bench-plan-prepare", "--manifest", str(case / "dataset-manifest.json"),
+                    "--range", "16384", "--plan-dir", str(case / "plans")]
+            completed = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+            (case / "stdout.log").write_text(completed.stdout)
+            (case / "stderr.log").write_text(completed.stderr)
+            write(case / "command.json", {"argv": args, "exit_code": completed.returncode})
+            assert completed.returncode == 2 and json.loads(completed.stdout)["plan"] is None
+            assert not list(case.glob("plans/*/request-plan.json"))
+            rejected_plans.append(alias)
+        write(root / "rejected-plan-inputs.json", rejected_plans)
         incomplete = []
         for mode in ("missing-summary", "truncated-summary", "missing-count", "invalid-dropped"):
             case = root / mode
@@ -368,7 +390,8 @@ def main():
         write(root / "incomplete-results.json", incomplete)
 
         write(root / "result.json", {"k6_version": "2.3.0", "fixture_only": True, "cases": results})
-        print(json.dumps({"work_dir": str(root), "passed": len(results), "rejected_inputs": len(rejected), "incomplete_results": len(incomplete)}))
+        print(json.dumps({"work_dir": str(root), "passed": len(results), "rejected_inputs": len(rejected),
+                          "rejected_plan_inputs": len(rejected_plans), "incomplete_results": len(incomplete)}))
     finally:
         server.shutdown()
         server.server_close()

@@ -28,7 +28,9 @@ The operator terminal needs kubectl, a POSIX shell, envsubst, Python 3, curl and
 sha256sum. The tools themselves are Go binaries; Python is used only by the
 operator-side configuration, result-handoff and HTTP checks in the walkthrough.
 
-Provide two immutable image references that the source node can obtain:
+Provide two image references that the source node can obtain. The renderer accepts
+image names, `repository:tag`, or `repository@sha256:...`; prefer digests when
+exact image reproducibility is required:
 
 - **TOOLS_IMAGE:** the three preparation binaries built with the
   [preparation tools Dockerfile](../../Dockerfile.tools).
@@ -41,6 +43,61 @@ does not distribute or publish it; arrange image delivery before deploying.
 
 ## Configure this dataset
 
+### 一条命令生成部署 YAML（推荐）
+
+在本目录执行，只需要 Python 3，不需要设置环境变量或安装 envsubst。
+创建 `source.env`，填写实际环境参数，例如：
+
+```dotenv
+SOURCE_NODE=your-source-node
+TOOLS_IMAGE=your-registry/proxy-bench-tools:your-version
+FILE_SERVER_IMAGE=your-registry/file-server:your-version
+PVC_STORAGE_CLASS=your-storage-class
+# Seed 不在集群网络中时，填写已经规划好的可达 HTTP 入口。
+# BASE_URL=http://your-source-endpoint
+```
+
+未填写的配置自动沿用 [source.env.example](source.env.example)：4 个 4MiB
+对象、1Gi PVC、benchmark 命名空间等。可以在自己的配置中覆盖任意示例参数。
+配置使用 `NAME=value`，支持注释和引号，不执行 shell 命令、不展开变量。
+镜像支持 `仓库:版本` 和 `仓库@sha256:摘要`，也支持不带标签的镜像名。
+`PVC_STORAGE_CLASS` 默认空字符串，表示显式不使用 StorageClass；需要动态申请
+存储时请填写集群中实际存在的存储类。
+
+```bash
+python3 render.py --config source.env --output rendered-source
+```
+
+已有 PVC 时，在配置中设置 `PVC_NAME`，执行：
+
+```bash
+python3 render.py --config source.env --output rendered-source --existing-pvc
+```
+
+产物为 `dataset-job.yaml`、`file-server.yaml`，以及新建卷时的 `pvc.yaml`。
+输出目录必须为空或不存在，避免覆盖旧配置或混入旧的 PVC 文件。
+固定配置后直接保留这些 YAML，无须每轮重新渲染。这个脚本替代手动加载配置、
+校验和 envsubst；仅在本地生成文件，不运行 kubectl，不生成对象正文。
+
+部署前可分别执行服务端检查：
+
+```bash
+kubectl apply --dry-run=server -f rendered-source/dataset-job.yaml
+kubectl apply --dry-run=server -f rendered-source/file-server.yaml
+# 仅新建 PVC 时执行：
+kubectl apply --dry-run=server -f rendered-source/pvc.yaml
+```
+
+之后按下文操作说明，依次申请 PVC、运行数据 Job、保存生成结果、删除完成的
+Job，再发布 FileServer。不要直接 `kubectl apply -f rendered-source/` 同时启动
+全部资源：FileServer 使用的子目录由数据 Job 创建。配置文件不变可以复用 YAML，
+但已有数据的 PVC 不能重新运行生成任务；数据生成器要求 dataset 目录为空。
+
+### 手动渲染方式
+
+The legacy manual checks in OPERATIONS.md still require digest references;
+use render.py for image names or tags.
+
 From this directory, copy `source.env.example` to `source.env`, then edit it.
 The [deployment walkthrough](OPERATIONS.md) gives the commands in execution order.
 
@@ -48,7 +105,7 @@ The [deployment walkthrough](OPERATIONS.md) gives the commands in execution orde
 |---|---|
 | SOURCE_NAME / NAMESPACE | An independent source name and an existing namespace. |
 | SOURCE_NODE | The actual source node; there is no usable default. |
-| TOOLS_IMAGE / FILE_SERVER_IMAGE | Actual `repository@sha256:...` references, not mutable tags. |
+| TOOLS_IMAGE / FILE_SERVER_IMAGE | Reachable image names, tags or SHA-256 digest references (render.py). |
 | PVC_NAME | The dataset volume; check capacity, placement and write permissions. |
 | BASE_URL | The final HTTP address reachable from the Seed. |
 | B / N | Object bytes and count; the small example is 4194304 bytes times four. |

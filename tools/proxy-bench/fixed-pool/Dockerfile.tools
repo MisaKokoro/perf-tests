@@ -1,10 +1,24 @@
-FROM alpine:3.22
+FROM alpine:3.22 AS preparation-binaries
 
 ARG TARGETARCH
+COPY bin/proxy-bench-tools/ /binaries/
+RUN set -eu; \
+    arch="${TARGETARCH:-}"; \
+    if [ -z "$arch" ]; then \
+        case "$(uname -m)" in \
+            x86_64) arch=amd64 ;; \
+            aarch64|arm64) arch=arm64 ;; \
+            *) echo "Unsupported tools architecture: $(uname -m)" >&2; exit 1 ;; \
+        esac; \
+    fi; \
+    mkdir -p /out; \
+    for command in data-prepare plan-prepare seed-cache-prepare; do \
+        cp "/binaries/$arch/proxy-bench-$command" "/out/proxy-bench-$command"; \
+        chmod 755 "/out/proxy-bench-$command"; \
+    done
 
-COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-data-prepare /usr/local/bin/
-COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-plan-prepare /usr/local/bin/
-COPY bin/proxy-bench-tools/${TARGETARCH}/proxy-bench-seed-cache-prepare /usr/local/bin/
+FROM alpine:3.22
+COPY --from=preparation-binaries /out/ /usr/local/bin/
 
 # A Job selects the preparation command explicitly; no daemon or orchestrator.
 CMD ["/usr/local/bin/proxy-bench-data-prepare", "--help"]

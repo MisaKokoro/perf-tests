@@ -38,8 +38,10 @@ exact image reproducibility is required:
   HEAD and Range support. The existing
   [FileServer image](../../../../file-server/Dockerfile) provides this capability.
 
-See [build instructions](../../README.md#build). Building a local OCI archive
-does not distribute or publish it; arrange image delivery before deploying.
+See [build instructions](../../README.md#build). The default tools image build
+uses ordinary Docker and loads a native image locally; it does not publish or
+distribute it. Arrange image delivery before deploying. An optional Buildx
+export target is available for multi-platform OCI archives.
 
 ## Configure this dataset
 

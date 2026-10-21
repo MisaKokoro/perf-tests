@@ -17,11 +17,44 @@ make build-proxy-bench-data-prepare build-proxy-bench-plan-prepare build-proxy-b
 ```
 
 `make build-proxy-bench-tools` creates static preparation and worker-support binaries under
-`bin/proxy-bench-tools/{amd64,arm64}/`. `make docker-build-proxy-bench-tools`
-exports a local multi-platform OCI archive at `bin/proxy-bench-tools-image.tar`;
-it does not publish an image. For a single-platform Docker daemon image, use
-Buildx with `--platform linux/amd64 --load` (or the native arm64 platform) and
-`--build-arg TARGETARCH=amd64` when building the tools Dockerfile manually.
+`bin/proxy-bench-tools/{amd64,arm64}/`. Build the preparation tools image with:
+
+```bash
+make docker-build-proxy-bench-tools
+```
+
+This uses ordinary `docker build` and creates the native Docker daemon image
+`dragonflyoss/proxy-bench-tools:latest`. It does not require Buildx, `--platform`
+or an explicit `TARGETARCH`. The Dockerfile selects amd64/arm64 binaries inside
+the build container and includes only the three preparation commands in the
+final image. Docker must support multi-stage builds (`COPY --from`).
+
+For a custom image tag, run:
+
+```bash
+make build-proxy-bench-tools
+docker build -t localhost/proxy-bench-tools:fixed-pool \
+  -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
+```
+
+The image has a default CMD, so select a tool directly after the image name:
+
+```bash
+docker run --rm dragonflyoss/proxy-bench-tools:latest proxy-bench-data-prepare --help
+docker run --rm dragonflyoss/proxy-bench-tools:latest proxy-bench-plan-prepare --help
+docker run --rm dragonflyoss/proxy-bench-tools:latest proxy-bench-seed-cache-prepare --help
+```
+
+`make docker-push-proxy-bench-tools` builds natively and pushes; use
+`D7Y_REGISTRY=your-registry/your-project` to change the repository prefix.
+Explicit platform builds still use Buildx: a single platform with
+`make docker-build-proxy-bench-tools PLATFORMS=linux/arm64` loads locally;
+`make docker-push-proxy-bench-tools PLATFORMS=linux/amd64,linux/arm64` publishes
+both architectures using a suitable builder.
+
+The previous multi-platform OCI archive workflow is available separately as
+`make docker-export-proxy-bench-tools` (requires Buildx), producing
+`bin/proxy-bench-tools-image.tar`. The default build no longer exports this file.
 
 Linux amd64 and arm64 builds are supported. Cross-compilation establishes
 buildability; native arm64 execution and performance require separate validation.

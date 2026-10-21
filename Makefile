@@ -15,7 +15,8 @@
 # Registry to push the images to, e.g. D7Y_REGISTRY=ghcr.io/dragonflyoss make docker-push-image-bench-images.
 D7Y_REGISTRY ?= dragonflyoss
 
-# file-server/image-bench/proxy-bench build natively by default. Opt into Buildx explicitly.
+# file-server/image-bench/proxy-bench and its tools build natively by default.
+# Opt into Buildx explicitly with PLATFORMS.
 PLATFORMS ?=
 
 all: help
@@ -195,8 +196,17 @@ test-proxy-bench-fixed-pool:
 .PHONY: test-proxy-bench-fixed-pool
 
 docker-build-proxy-bench-tools: build-proxy-bench-tools
-	docker buildx build --platform linux/amd64,linux/arm64 --output type=oci,dest=bin/proxy-bench-tools-image.tar -t $(D7Y_REGISTRY)/proxy-bench-tools:latest -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
+	sh hack/build-image.sh build $(D7Y_REGISTRY)/proxy-bench-tools:latest tools/proxy-bench/fixed-pool/Dockerfile.tools "$(PLATFORMS)"
 .PHONY: docker-build-proxy-bench-tools
+
+docker-push-proxy-bench-tools: build-proxy-bench-tools
+	sh hack/build-image.sh push $(D7Y_REGISTRY)/proxy-bench-tools:latest tools/proxy-bench/fixed-pool/Dockerfile.tools "$(PLATFORMS)"
+.PHONY: docker-push-proxy-bench-tools
+
+# Optional legacy multi-platform OCI archive workflow; requires Buildx.
+docker-export-proxy-bench-tools: build-proxy-bench-tools
+	docker buildx build --platform "$(if $(PLATFORMS),$(PLATFORMS),linux/amd64,linux/arm64)" --output type=oci,dest=bin/proxy-bench-tools-image.tar -t $(D7Y_REGISTRY)/proxy-bench-tools:latest -f tools/proxy-bench/fixed-pool/Dockerfile.tools .
+.PHONY: docker-export-proxy-bench-tools
 
 # Run code lint
 lint: markdownlint
@@ -222,6 +232,8 @@ help:
 	@echo "make build-proxy-bench-seed-cache-prepare   build the fixed-pool Seed preparation command"
 	@echo "make build-proxy-bench-tools                build amd64/arm64 preparation and worker binaries"
 	@echo "make docker-build-proxy-bench-tools         build the preparation tools image"
+	@echo "make docker-push-proxy-bench-tools          build and push the preparation tools image"
+	@echo "make docker-export-proxy-bench-tools        export a multi-platform OCI archive (Buildx)"
 	@echo "make build-proxy-bench-data-prepare         build the fixed-pool dataset command"
 	@echo "make build-proxy-bench-plan-prepare         build the fixed-pool access-plan command"
 	@echo "make docker-build-file-server               build file-server image"

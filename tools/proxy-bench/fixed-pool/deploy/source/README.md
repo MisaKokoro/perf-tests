@@ -75,7 +75,15 @@ python3 render.py --config source.env --output rendered-source --existing-pvc
 ```
 
 产物为 `dataset-job.yaml`、`file-server.yaml`，以及新建卷时的 `pvc.yaml`。
-输出目录必须为空或不存在，避免覆盖旧配置或混入旧的 PVC 文件。
+默认要求输出目录为空或不存在。修改配置后，加上 `--force` 可覆盖已有 YAML：
+
+```bash
+python3 render.py --config source.env --output rendered-source --force
+```
+
+仅覆盖本脚本生成的文件，目录中的其他文件保留。组合使用
+`--force --existing-pvc` 时会删除旧的 `pvc.yaml`，避免残留新建卷配置。
+配置校验和模板渲染通过后才会修改输出文件。
 固定配置后直接保留这些 YAML，无须每轮重新渲染。这个脚本替代手动加载配置、
 校验和 envsubst；仅在本地生成文件，不运行 kubectl，不生成对象正文。
 

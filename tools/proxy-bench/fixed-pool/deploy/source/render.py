@@ -110,6 +110,7 @@ def main():
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("source.env"))
     parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path("rendered-source"))
     parser.add_argument("--existing-pvc", action="store_true", help="使用已有 PVC，不生成 pvc.yaml")
+    parser.add_argument("--force", action="store_true", help="覆盖已有部署 YAML；existing-pvc 模式下删除旧 pvc.yaml")
     args = parser.parse_args()
     config = read_config(HERE / "source.env.example")
     overrides = read_config(args.config)
@@ -122,12 +123,23 @@ def main():
     if not args.existing_pvc:
         files["pvc.yaml"] = "pvc.example.yaml"
     outputs = {name: render((HERE / template).read_text(), config) for name, template in files.items()}
-    # A fresh/empty directory avoids mixing new files with stale PVC manifests.
-    if args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):
-        raise ValueError(f"输出目录必须为空或不存在：{args.output}")
+    if args.output.exists():
+        if not args.output.is_dir():
+            raise ValueError(f"输出路径不是目录：{args.output}")
+        if any(args.output.iterdir()) and not args.force:
+            raise ValueError(f"输出目录非空：{args.output}；如需覆盖，请使用 --force")
+    # Check every managed path before overwriting any file. Unrelated files stay.
+    for name in ("dataset-job.yaml", "file-server.yaml", "pvc.yaml"):
+        path = args.output / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError(f"输出文件不能是符号链接或目录：{path}")
+        if path.resolve() == args.config.resolve():
+            raise ValueError(f"输出文件不能覆盖输入配置：{path}")
     args.output.mkdir(parents=True, exist_ok=True)
     for name, content in outputs.items():
         (args.output / name).write_text(content)
+    if args.force and args.existing_pvc:
+        (args.output / "pvc.yaml").unlink(missing_ok=True)
     print(f'BASE_URL={config["BASE_URL"]}')
     for name in outputs:
         print(f"已生成：{args.output / name}")

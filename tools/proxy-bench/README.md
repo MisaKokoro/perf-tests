@@ -3,6 +3,39 @@
 Load-test the Dragonfly dfdaemon proxy with [k6](https://k6.io). Every request goes through the proxy, the
 response body is discarded as it arrives, and k6 prints latency, throughput and error rate at the end.
 
+## Build
+
+From the repository root, with Go 1.25 and Docker installed:
+
+```shell
+make docker-build-proxy-bench
+```
+
+This builds the preparation/worker binaries, then uses ordinary `docker build`
+to create `dragonflyoss/proxy-bench:latest` for the Docker daemon's native
+architecture. Buildx and `--platform` are not required. The Dockerfile selects
+the amd64 or arm64 worker binary automatically, preserving the k6 runtime user
+and entrypoint.
+
+For a custom tag, build the binaries first:
+
+```shell
+make build-proxy-bench-tools
+docker build -t localhost/proxy-bench:fixed-pool -f tools/proxy-bench/Dockerfile .
+```
+
+`make docker-push-proxy-bench` builds natively and pushes the image;
+`D7Y_REGISTRY=your-registry/your-project` changes the repository prefix.
+Buildx remains optional for explicit platforms:
+
+```shell
+make docker-build-proxy-bench PLATFORMS=linux/arm64
+make docker-push-proxy-bench PLATFORMS=linux/amd64,linux/arm64
+```
+
+A single explicit platform is loaded locally; multiple platforms use the push
+target with a suitable Buildx builder.
+
 ## Prerequisites
 
 - Dragonfly installed in the cluster, see the [root README](../../README.md).

@@ -363,16 +363,16 @@ contain this entrypoint. This development delivery has no published fixed-pool
 image; a builder must provide one to the test cluster. Reuse that image across
 runs with the same code; testers do not need to rebuild it for each test.
 
-If no suitable image is available, the builder can build one for a local native
-amd64 Docker daemon with Go and Docker Buildx:
+If no suitable image is available, the builder can build one for the Docker
+daemon's native amd64 or arm64 architecture with Go and ordinary Docker:
 
 ```bash
 make build-proxy-bench-tools
-docker buildx build --platform linux/amd64 --load -t localhost/proxy-bench:fixed-pool \
+docker build -t localhost/proxy-bench:fixed-pool \
   -f tools/proxy-bench/Dockerfile .
 ```
 
-Use the native arm64 platform on arm64. Make the image available to your cluster
+The Dockerfile selects the native worker binary automatically. Make the image available to your cluster
 and pin its digest in the Job. An operator may use `examples/input-pvc.yaml` to create an input PVC and a
 temporary transfer Pod, copy metadata with tar through `kubectl exec -i`, then
 delete only the helper Pod. This is a separate operator action; the worker never

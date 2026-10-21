@@ -15,30 +15,33 @@
 # Registry to push the images to, e.g. D7Y_REGISTRY=ghcr.io/dragonflyoss make docker-push-image-bench-images.
 D7Y_REGISTRY ?= dragonflyoss
 
+# file-server/image-bench/proxy-bench build natively by default. Opt into Buildx explicitly.
+PLATFORMS ?=
+
 all: help
 
 # Build file-server image.
 docker-build-file-server:
 	@echo "Begin to use docker build file-server image."
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(D7Y_REGISTRY)/file-server:latest -f ./tools/file-server/Dockerfile .
+	sh hack/build-image.sh build $(D7Y_REGISTRY)/file-server:latest ./tools/file-server/Dockerfile "$(PLATFORMS)"
 .PHONY: docker-build-file-server
 
 # Push file-server image.
 docker-push-file-server:
 	@echo "Begin to push file-server docker image."
-	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(D7Y_REGISTRY)/file-server:latest -f ./tools/file-server/Dockerfile .
+	sh hack/build-image.sh push $(D7Y_REGISTRY)/file-server:latest ./tools/file-server/Dockerfile "$(PLATFORMS)"
 .PHONY: docker-push-file-server
 
 # Build proxy-bench image.
 docker-build-proxy-bench: build-proxy-bench-tools
 	@echo "Begin to use docker build proxy-bench image."
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(D7Y_REGISTRY)/proxy-bench:latest -f ./tools/proxy-bench/Dockerfile .
+	sh hack/build-image.sh build $(D7Y_REGISTRY)/proxy-bench:latest ./tools/proxy-bench/Dockerfile "$(PLATFORMS)"
 .PHONY: docker-build-proxy-bench
 
 # Push proxy-bench image.
 docker-push-proxy-bench: build-proxy-bench-tools
 	@echo "Begin to push proxy-bench docker image."
-	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(D7Y_REGISTRY)/proxy-bench:latest -f ./tools/proxy-bench/Dockerfile .
+	sh hack/build-image.sh push $(D7Y_REGISTRY)/proxy-bench:latest ./tools/proxy-bench/Dockerfile "$(PLATFORMS)"
 .PHONY: docker-push-proxy-bench
 
 # Build file-bench image.
@@ -68,13 +71,13 @@ docker-push-dfget-bench:
 # Build image-bench image.
 docker-build-image-bench:
 	@echo "Begin to use docker build image-bench image."
-	docker buildx build --platform linux/amd64,linux/arm64 -t $(D7Y_REGISTRY)/image-bench:latest -f ./tools/image-bench/Dockerfile .
+	sh hack/build-image.sh build $(D7Y_REGISTRY)/image-bench:latest ./tools/image-bench/Dockerfile "$(PLATFORMS)"
 .PHONY: docker-build-image-bench
 
 # Push image-bench image.
 docker-push-image-bench:
 	@echo "Begin to push image-bench docker image."
-	docker buildx build --platform linux/amd64,linux/arm64 --push -t $(D7Y_REGISTRY)/image-bench:latest -f ./tools/image-bench/Dockerfile .
+	sh hack/build-image.sh push $(D7Y_REGISTRY)/image-bench:latest ./tools/image-bench/Dockerfile "$(PLATFORMS)"
 .PHONY: docker-push-image-bench
 
 # Build all image-bench images pulled by the image benchmark, see build/images/image-bench.

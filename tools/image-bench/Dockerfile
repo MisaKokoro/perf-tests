@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -16,9 +16,19 @@ FROM alpine:3.22
 ARG TARGETARCH
 ARG CRICTL_VERSION=v1.37.0
 
-RUN apk add --no-cache curl kubectl \
-    && curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${TARGETARCH:-amd64}.tar.gz" \
-    | tar -xz -C /usr/local/bin crictl
+RUN set -eu; \
+    apk add --no-cache curl kubectl; \
+    arch="${TARGETARCH:-}"; \
+    if [ -z "$arch" ]; then \
+        case "$(uname -m)" in \
+            x86_64) arch=amd64 ;; \
+            aarch64|arm64) arch=arm64 ;; \
+            *) echo "Unsupported crictl architecture: $(uname -m)" >&2; exit 1 ;; \
+        esac; \
+    fi; \
+    curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${arch}.tar.gz" -o /tmp/crictl.tar.gz; \
+    tar -xz -C /usr/local/bin -f /tmp/crictl.tar.gz crictl; \
+    rm /tmp/crictl.tar.gz
 
 COPY --from=builder /out/dfbench /usr/local/bin/dfbench
 

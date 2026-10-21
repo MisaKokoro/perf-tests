@@ -4,6 +4,18 @@ This repository includes performance test tools of dragonfly.
 
 ## Usage
 
+### Build image-bench, file-server and proxy-bench
+
+```shell
+make docker-build-image-bench
+make docker-build-file-server
+make docker-build-proxy-bench
+```
+
+These three targets use native `docker build` by default; Buildx and `--platform`
+are not required. For registry overrides and optional multi-platform builds,
+see the [image build instructions](tools/image-bench/README.md#build-the-image).
+
 ### Installation
 
 ```shell

@@ -5,6 +5,43 @@ at the same time, driven by a pod pinned to the node, and `dfbench` prints the p
 `Pulled` events, the failure rate and how much of the traffic went back to source, came from remote peers or was
 hit in the local cache.
 
+## Build the image
+
+From the repository root, build for the Docker daemon's native architecture:
+
+```shell
+make docker-build-image-bench
+make docker-build-file-server
+```
+
+These targets use ordinary `docker build`, without Buildx or `--platform`.
+The images are available in the local Docker image store. You can also run:
+
+```shell
+docker build -t dragonflyoss/image-bench:latest -f tools/image-bench/Dockerfile .
+docker build -t dragonflyoss/file-server:latest -f tools/file-server/Dockerfile .
+```
+
+Use `D7Y_REGISTRY=your-registry/your-project` to change the repository prefix.
+The matching `docker-push-image-bench` and `docker-push-file-server` targets
+build natively, then run `docker push` by default.
+
+For an explicit platform, Buildx is still available as an opt-in:
+
+```shell
+# Build one platform and load it into the local Docker image store.
+make docker-build-image-bench PLATFORMS=linux/amd64
+
+# Build and publish both architectures (requires an appropriate Buildx builder).
+make docker-push-image-bench PLATFORMS=linux/amd64,linux/arm64
+```
+
+The same `PLATFORMS` setting works for the file-server build/push targets.
+Multi-platform local builds are rejected with guidance to use the push target.
+Native builds still require multi-stage Dockerfile support, access to base images
+and dependency downloads. The native arm64 image selects the arm64 crictl binary.
+The separate large test-data image targets retain their existing Buildx workflow.
+
 ## Prerequisites
 
 - Dragonfly installed in the cluster, see the [root README](../../README.md).
